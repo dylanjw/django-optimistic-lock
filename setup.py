@@ -8,9 +8,9 @@ def read(fname):
 
 setup(
     name='django-optimistic-lock',
-    version='0.1',
-    description='Offline optimistic locking for Django',
-    url='https://github.com/gavinwahl/django-optimistic-lock',
+    version='1.0',
+    description='Optional optimistic locking for Django',
+    url='https://github.com/hospiq/django-optimistic-lock',
     long_description=read('README.rst'),
     license='BSD',
     author='Gavin Wahl',
