@@ -1,14 +1,47 @@
+import threading
+
 from django.db import models
 from django import forms
 from django.core.exceptions import ImproperlyConfigured
 from django.contrib.admin.widgets import AdminIntegerFieldWidget
+from django.db.models import F
 from django.db.models.query_utils import DeferredAttribute
+
+class optimisticLocking(object):
+    """Enable optimistic locking - contextmanager or decorator.
+        Can be applied to particular model instance, model class or globally per thread
+    """
+    current_state = threading.local()
+
+    def __init__(self, model=None):
+        self.model = model
+
+    def __enter__(self):
+        stateObj = self.model or self.current_state
+        stateObj._optimisticLocking = getattr(stateObj, '_optimisticLocking', 0) + 1
+
+    def __exit__(self, *args, **kwds):
+        stateObj = self.model or self.current_state
+        stateObj._optimisticLocking = getattr(stateObj, '_optimisticLocking', 1) - 1
+
+    def __call__(self, func):
+        def wrapper(*args, **kwds):
+            with self:
+                return func(*args, **kwds)
+        return wrapper
+
+    @classmethod
+    def active(cls, model=None):
+        return getattr(cls.current_state, '_optimisticLocking', 0) or (model and getattr(model, '_optimisticLocking', 0))
 
 
 class ConcurrentUpdate(Exception):
     """
     Raised when a model can not be saved due to a concurrent update.
     """
+    def __init__(self, model):
+        model.refresh_from_db() # to return actual DB version, as `model` is tainted with deserialized values
+        self.model = model
 
 
 class ReadonlyInput(forms.TextInput):
@@ -53,8 +86,9 @@ class VersionField(models.PositiveIntegerField):
 class VersionedMixin(object):
     """
     Model mixin implementing version checking during saving.
-    When a concurrent update is detected, saving is aborted and
-    ConcurrentUpdate will be raised.
+    When a concurrent update is detected, saving is aborted and ConcurrentUpdate will be raised.
+
+    Limitation: as it is hooked to `Model._do_update` it is not able to increment version or check locks for QuerySet.update calls.
     """
 
     def _do_update(self, base_qs, using, pk_val, values, update_fields, forced_update):
@@ -76,22 +110,32 @@ class VersionedMixin(object):
 
         # pre_save may or may not have been called at this point, based on if
         # version_field is in update_fields. Since we need to reliably know the
-        # old version, we can't increment there.
-        old_version = version_field.value_from_object(self)
+        # old version, we can't increment there yet.
+
+        # client version, e.g. provided by client through API call
+        client_version = version_field.value_from_object(self)
+
+        # if version provided, enable optimistic locking by adding WHERE version to UPDATE query
+        version_qs = base_qs
+        if client_version is not None and optimisticLocking.active(self):
+            version_qs = version_qs.filter(**{version_field.attname: client_version})
 
         # so increment it here instead. Now old_version is reliable.
-        for i, value_tuple in enumerate(values):
-            if isinstance(value_tuple[0], VersionField):
-                assert old_version == value_tuple[2]
-                values[i] = (
-                    value_tuple[0],
-                    value_tuple[1],
-                    value_tuple[2] + 1,
-                )
-                setattr(self, version_field.attname, old_version + 1)
+        for i, (field, model, value) in enumerate(values):
+            if isinstance(field, VersionField):
+                assert client_version is None or client_version == value
+                # update version only if optimistic locking provided
+                if value is not None:
+                    new_version = value + 1
+                    values[i] = (field, model, new_version)
+                    setattr(self, version_field.attname, new_version)
+                else:
+                    # we don't want to redundantly load the object being edited to increment version when not provided
+                    # F expression translates to "UPDATE table SET version = version + 1"
+                    values[i] = (field, model, F(version_field.attname) + 1)
 
         updated = super(VersionedMixin, self)._do_update(
-            base_qs=base_qs.filter(**{version_field.attname: old_version}),
+            base_qs=version_qs,
             using=using,
             pk_val=pk_val,
             values=values,
@@ -100,7 +144,7 @@ class VersionedMixin(object):
         )
 
         if not updated and base_qs.filter(pk=pk_val).exists():
-            raise ConcurrentUpdate
+            raise ConcurrentUpdate(self)
 
         return updated
 
@@ -110,6 +154,13 @@ class VersionedMixin(object):
                 return field
         raise ImproperlyConfigured(
             'VersionedMixin models must have a VersionField')
+
+
+class VersionedModel(VersionedMixin, models.Model):
+    class Meta:
+        abstract = True
+
+    version = VersionField()
 
 try:
     from south.modelsinspector import add_introspection_rules
