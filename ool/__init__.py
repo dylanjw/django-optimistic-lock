@@ -7,40 +7,33 @@ from django.contrib.admin.widgets import AdminIntegerFieldWidget
 from django.db.models import F
 from django.db.models.query_utils import DeferredAttribute
 
+
 class optimisticLocking(object):
-    """Enable optimistic locking - contextmanager or decorator.
-        Can be applied to particular model instance, model class or globally per thread
+    """Enable optimistic locking contextmanager.
+        Can be applied to model instance.
     """
-    current_state = threading.local()
 
     def __init__(self, model=None):
         self.model = model
 
     def __enter__(self):
-        stateObj = self.model or self.current_state
-        stateObj._optimisticLocking = getattr(stateObj, '_optimisticLocking', 0) + 1
+        self.model._optimisticLocking = getattr(self.model, '_optimisticLocking', 0) + 1
 
     def __exit__(self, *args, **kwds):
-        stateObj = self.model or self.current_state
-        stateObj._optimisticLocking = getattr(stateObj, '_optimisticLocking', 1) - 1
-
-    def __call__(self, func):
-        def wrapper(*args, **kwds):
-            with self:
-                return func(*args, **kwds)
-        return wrapper
+        self.model._optimisticLocking = getattr(self.model, '_optimisticLocking', 1) - 1
 
     @classmethod
-    def active(cls, model=None):
-        return getattr(cls.current_state, '_optimisticLocking', 0) or (model and getattr(model, '_optimisticLocking', 0))
+    def active(cls, model):
+        return getattr(model, '_optimisticLocking', 0)
 
 
 class ConcurrentUpdate(Exception):
     """
     Raised when a model can not be saved due to a concurrent update.
     """
+
     def __init__(self, model):
-        model.refresh_from_db() # to return actual DB version, as `model` is tainted with deserialized values
+        model.refresh_from_db()  # to return actual DB version, as `model` is tainted with deserialized values
         self.model = model
 
 
@@ -56,6 +49,7 @@ class ReadonlyInput(forms.TextInput):
 
     https://code.djangoproject.com/ticket/11277
     """
+
     def __init__(self, *args, **kwargs):
         super(ReadonlyInput, self).__init__(*args, **kwargs)
         # just readonly, because disabled won't submit the value
@@ -98,7 +92,6 @@ class VersionedMixin(object):
         if client_version is None:
             setattr(self, version_field.attname, version_field.default)
         return super(VersionedMixin, self)._do_insert(manager, using, fields, update_pk, raw)
-
 
     def _do_update(self, base_qs, using, pk_val, values, update_fields, forced_update):
         version_field = self.get_version_field()
@@ -171,8 +164,10 @@ class VersionedModel(VersionedMixin, models.Model):
 
     version = VersionField()
 
+
 try:
     from south.modelsinspector import add_introspection_rules
+
     add_introspection_rules([], ["^ool\.VersionField"])
 except ImportError as e:
     pass
