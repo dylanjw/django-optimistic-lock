@@ -91,6 +91,15 @@ class VersionedMixin(object):
     Limitation: as it is hooked to `Model._do_update` it is not able to increment version or check locks for QuerySet.update calls.
     """
 
+    def _do_insert(self, manager, using, fields, update_pk, raw):
+        """Be defensive on inserts with version=None - just treat None as default"""
+        version_field = self.get_version_field()
+        client_version = version_field.value_from_object(self)
+        if client_version is None:
+            setattr(self, version_field.attname, version_field.default)
+        return super(VersionedMixin, self)._do_insert(manager, using, fields, update_pk, raw)
+
+
     def _do_update(self, base_qs, using, pk_val, values, update_fields, forced_update):
         version_field = self.get_version_field()
 
