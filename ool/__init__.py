@@ -168,6 +168,6 @@ class VersionedModel(VersionedMixin, models.Model):
 try:
     from south.modelsinspector import add_introspection_rules
 
-    add_introspection_rules([], ["^ool\.VersionField"])
+    add_introspection_rules([], [r"^ool\.VersionField"])
 except ImportError as e:
     pass
